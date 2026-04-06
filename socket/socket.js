@@ -15,12 +15,12 @@ exports.initSocket = (server) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
     // ── REGISTER ──
-    // Both users and captains call this on connect
     socket.on("register", ({ userId, role }) => {
-      socket.join(`user_${userId}`);
-      userSockets[userId] = socket.id;
-      if (role === "driver") captainSockets[userId] = socket.id;
-      console.log(`✅ Registered [${role}]: ${userId}`);
+      const uid = String(userId);
+      socket.join(`user_${uid}`);
+      userSockets[uid] = socket.id;
+      if (role === "driver") captainSockets[uid] = socket.id;
+      console.log(`✅ Registered [${role}]: ${uid} → socket ${socket.id}`);
     });
 
     // ── CAPTAIN GOES ONLINE ──
@@ -74,20 +74,28 @@ exports.initSocket = (server) => {
   });
 };
 
-// ── EMIT TO SPECIFIC USER ROOM ──
+// ── EMIT TO SPECIFIC USER ROOM + direct socketId fallback ──
 exports.emitToUser = (userId, event, data) => {
   if (!io) return;
-  const room = `user_${userId}`;
+  const uid = String(userId);
+  const room = `user_${uid}`;
   console.log(`📡 emitToUser → ${room} | event: ${event}`);
   io.to(room).emit(event, data);
+  // Direct fallback via tracked socketId
+  const sid = userSockets[uid];
+  if (sid) io.to(sid).emit(event, data);
 };
 
-// ── EMIT TO SPECIFIC CAPTAIN ──
+// ── EMIT TO SPECIFIC CAPTAIN ROOM + direct socketId fallback ──
 exports.emitToCaptain = (captainId, event, data) => {
   if (!io) return;
-  const room = `user_${captainId}`;
+  const cid = String(captainId);
+  const room = `user_${cid}`;
   console.log(`📡 emitToCaptain → ${room} | event: ${event}`);
   io.to(room).emit(event, data);
+  // Direct fallback via tracked socketId
+  const sid = captainSockets[cid];
+  if (sid) io.to(sid).emit(event, data);
 };
 
 // ── FIND NEARBY CAPTAINS (Geospatial) ──
