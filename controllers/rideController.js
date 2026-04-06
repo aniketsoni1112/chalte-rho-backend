@@ -258,6 +258,9 @@ exports.verifyOTP = async (req, res) => {
     const userId = ride.user._id.toString();
     const captainId = ride.driver._id.toString();
 
+    const { getUserSockets } = require("../socket/socket");
+    console.log(`🔍 verifyOTP | userId: ${userId} | userSockets:`, Object.keys(getUserSockets()));
+
     // Notify user — ride started
     emitToUser(userId, "ride_started", {
       rideId: ride._id,
