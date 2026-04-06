@@ -16,6 +16,7 @@ router.post("/verify-otp/:id", auth, verifyOTP);
 router.post("/complete/:id", auth, completeRide);
 router.post("/cancel/:id", auth, cancelRide);
 router.post("/rate/:id", auth, rateRide);
+router.post("/:id/rate", auth, rateRide);
 router.get("/history", auth, getRideHistory);
 router.get("/all", auth, getAllRides);
 router.get("/", auth, getAllRides);
