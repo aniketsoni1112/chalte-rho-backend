@@ -12,7 +12,9 @@ exports.updateProfile = async (req, res) => {
     const { name, email, phone, profileImage } = req.body;
     const update = { name, email, phone };
     if (profileImage) update.profileImage = profileImage;
-    const user = await User.findByIdAndUpdate(req.user.id, update, { returnDocument: 'after' }).select("-password");
+    const user = await User.findByIdAndUpdate(
+      req.user.id, update, { new: true }
+    ).select("-password");
     res.json(user);
   } catch (err) { res.status(500).json({ msg: err.message }); }
 };
