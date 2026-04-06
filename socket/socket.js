@@ -77,13 +77,17 @@ exports.initSocket = (server) => {
 // ── EMIT TO SPECIFIC USER ROOM ──
 exports.emitToUser = (userId, event, data) => {
   if (!io) return;
-  io.to(`user_${userId}`).emit(event, data);
+  const room = `user_${userId}`;
+  console.log(`📡 emitToUser → ${room} | event: ${event}`);
+  io.to(room).emit(event, data);
 };
 
 // ── EMIT TO SPECIFIC CAPTAIN ──
 exports.emitToCaptain = (captainId, event, data) => {
   if (!io) return;
-  io.to(`user_${captainId}`).emit(event, data);
+  const room = `user_${captainId}`;
+  console.log(`📡 emitToCaptain → ${room} | event: ${event}`);
+  io.to(room).emit(event, data);
 };
 
 // ── FIND NEARBY CAPTAINS (Geospatial) ──

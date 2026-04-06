@@ -21,8 +21,10 @@ exports.requestRide = async (req, res) => {
     // Generate OTP at ride creation — stored in DB, only sent to user
     const otp = generateOTP();
 
+    const userId = req.user.id || req.user._id;
+
     const ride = await Ride.create({
-      user: req.user.id,
+      user: userId,
       pickup: {
         type: "Point",
         coordinates: [pickup.lng, pickup.lat],
@@ -43,7 +45,7 @@ exports.requestRide = async (req, res) => {
     console.log(`🎫 Ride ${ride._id} created | OTP: ${otp} | Fare: ₹${fare}`);
 
     // Join user to ride room for multicast
-    global.io.in(`user_${req.user.id}`).socketsJoin(`ride_${ride._id}`);
+    global.io.in(`user_${userId}`).socketsJoin(`ride_${ride._id}`);
 
     // PHASE 2: GEOSPATIAL SEARCH — find nearby captains
     const lng = pickup.lng;
@@ -73,11 +75,13 @@ exports.requestRide = async (req, res) => {
     }
 
     // Confirm to user — UI switches to SEARCHING
-    emitToUser(req.user.id, "ride_status_update", {
+    emitToUser(userId, "ride_status_update", {
       status: "searching",
       rideId: ride._id,
       message: `Looking for captains nearby... (${nearbyCaptains.length} found)`,
     });
+
+    console.log(`📡 Emitting to user_${userId}`);
 
     // Return ride WITH otp to user's app
     res.json({
@@ -254,14 +258,7 @@ exports.verifyOTP = async (req, res) => {
     const userId = ride.user._id.toString();
     const captainId = ride.driver._id.toString();
 
-    // Multicast to ride room — both user and captain
-    global.io.to(`ride_${ride._id}`).emit("ride_started", {
-      rideId: ride._id,
-      status: "ongoing",
-      startTime: updatedRide.startTime,
-    });
-
-    // Targeted to user room (fallback)
+    // Notify user — ride started
     emitToUser(userId, "ride_started", {
       rideId: ride._id,
       status: "ongoing",
