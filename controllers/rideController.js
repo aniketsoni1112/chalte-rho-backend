@@ -115,10 +115,13 @@ exports.estimateFare = (req, res) => {
 // ─────────────────────────────────────────────
 exports.acceptRide = async (req, res) => {
   try {
+    const driverId = req.user.id;
+    console.log(`🏍️ acceptRide | driverId: ${driverId} | rideId: ${req.params.id}`);
+
     // Atomic update — only succeeds if status is still "searching"
     const updated = await Ride.findOneAndUpdate(
       { _id: req.params.id, status: "searching" },
-      { driver: req.user.id, status: "accepted" },
+      { driver: driverId, status: "accepted" },
       { returnDocument: "after" }
     );
 
@@ -140,13 +143,16 @@ exports.acceptRide = async (req, res) => {
     const userId = ride.user._id.toString();
     const captainId = ride.driver._id.toString();
 
+    const { getUserSockets } = require("../socket/socket");
+    console.log(`📡 acceptRide emitting ride_accepted to userId: ${userId} | userSockets:`, Object.keys(getUserSockets()));
+
     // Join captain to ride room
     global.io.in(`user_${captainId}`).socketsJoin(`ride_${ride._id}`);
 
-    // PHASE 4: OTP — Send to USER only, captain does NOT see it yet
+    // Send ride_accepted to USER with OTP and driver details
     emitToUser(userId, "ride_accepted", {
       _id: ride._id,
-      otp: ride.otp,          // OTP sent to user only
+      otp: ride.otp,
       fare: ride.fare,
       vehicle: ride.vehicle,
       paymentMethod: ride.paymentMethod,
@@ -180,7 +186,6 @@ exports.acceptRide = async (req, res) => {
       message: "Navigate to pickup point! Ask rider for OTP.",
     });
 
-    // Web Push to user
     if (ride.user?.pushSubscription) {
       await sendNotification(ride.user._id, {
         title: "Captain Found! 🏍️",
