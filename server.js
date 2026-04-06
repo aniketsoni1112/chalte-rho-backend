@@ -34,7 +34,7 @@ app.use("/api/chat", chatRoutes);
 app.get("/test", (req, res) => res.send("API Working ✅"));
 
 initSocket(server);
-const PORT = 5007;
-server.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
+const PORT = process.env.PORT || 5007;
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
 });
