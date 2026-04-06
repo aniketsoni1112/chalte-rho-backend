@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema({
   isOnline: { type: Boolean, default: false },
   vehicle: { type: String, enum: ["bike", "auto", "cab"], default: "bike" },
   vehicleNo: { type: String, default: "" },
+  profileImage: { type: String, default: "" }, // base64 or URL
 }, { timestamps: true });
 
 // 2dsphere index for geospatial queries
