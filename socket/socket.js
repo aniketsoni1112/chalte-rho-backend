@@ -17,6 +17,10 @@ exports.initSocket = (server) => {
     // ── REGISTER ──
     socket.on("register", ({ userId, role }) => {
       const uid = String(userId);
+      // Leave any previous room this socket was in
+      socket.rooms.forEach((room) => {
+        if (room !== socket.id) socket.leave(room);
+      });
       socket.join(`user_${uid}`);
       userSockets[uid] = socket.id;
       if (role === "driver") captainSockets[uid] = socket.id;
