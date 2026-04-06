@@ -9,10 +9,12 @@ const genToken = (id, role) => jwt.sign({ id, role }, process.env.JWT_SECRET, { 
 exports.register = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
+    // Only allow valid roles — prevent "rider" or other invalid values
+    const safeRole = role === "driver" ? "driver" : "user";
     const exists = await User.findOne({ email });
     if (exists) return res.status(400).json({ msg: "Email already registered" });
     const hash = await bcrypt.hash(password, 10);
-    const user = await User.create({ name, email, password: hash, role });
+    const user = await User.create({ name, email, password: hash, role: safeRole });
     res.json({ token: genToken(user._id, user.role), user });
   } catch (err) {
     res.status(500).json({ msg: err.message });

@@ -392,7 +392,10 @@ exports.rateRide = async (req, res) => {
 
 exports.getRideHistory = async (req, res) => {
   try {
-    const filter = req.user.role === "driver" ? { driver: req.user.id } : { user: req.user.id };
+    // Support both role:driver and role:user (normalize rider->user already done)
+    const filter = req.user.role === "driver"
+      ? { driver: req.user.id }
+      : { user: req.user.id };
     const rides = await Ride.find({ ...filter, status: "completed" })
       .populate("user", "name").populate("driver", "name")
       .sort({ createdAt: -1 }).limit(20);
