@@ -3,95 +3,58 @@ const Ride = require("../models/Ride");
 const User = require("../models/User");
 const { calculateFare } = require("../utils/fare");
 const { sendNotification } = require("../utils/push");
-const { emitToUser, emitToCaptain, findNearbyCaptains } = require("../socket/socket");
+const { emitToUser, emitToCaptain, findNearbyCaptains, getUserSockets } = require("../socket/socket");
 
-// Generate secure 4-digit OTP
 const generateOTP = () => parseInt(crypto.randomInt(1000, 9999));
 
 // ─────────────────────────────────────────────
-// PHASE 1: BOOKING — Create ride, lock fare, find captains
+// BOOKING
 // ─────────────────────────────────────────────
 exports.requestRide = async (req, res) => {
   try {
     const { pickup, destination, vehicle, paymentMethod } = req.body;
-
-    // Fare lock — saved at booking time, won't change
     const fare = calculateFare(pickup, destination, vehicle);
-
-    // Generate OTP at ride creation — stored in DB, only sent to user
     const otp = generateOTP();
+    const userId = req.user.id;
 
-    const userId = req.user.id || req.user._id;
+    // Cancel any stuck searching rides for this user
+    await Ride.updateMany({ user: userId, status: "searching" }, { $set: { status: "cancelled" } });
 
     const ride = await Ride.create({
       user: userId,
-      pickup: {
-        type: "Point",
-        coordinates: [pickup.lng, pickup.lat],
-        address: pickup.address || "",
-      },
-      destination: {
-        type: "Point",
-        coordinates: [destination.lng, destination.lat],
-        address: destination.address || destination,
-      },
+      pickup: { type: "Point", coordinates: [pickup.lng, pickup.lat], address: pickup.address || "" },
+      destination: { type: "Point", coordinates: [destination.lng, destination.lat], address: destination.address || "" },
       vehicle: vehicle || "bike",
-      fare,       // locked fare
-      otp,        // secure OTP stored in DB
-      status: "searching",
+      fare, otp, status: "searching",
       paymentMethod: paymentMethod || "cash",
     });
 
-    console.log(`🎫 Ride ${ride._id} created | OTP: ${otp} | Fare: ₹${fare}`);
-
-    // Join user to ride room for multicast
+    console.log(`🎫 Ride ${ride._id} | OTP: ${otp} | Fare: ₹${fare} | User: ${userId}`);
     global.io.in(`user_${userId}`).socketsJoin(`ride_${ride._id}`);
 
-    // PHASE 2: GEOSPATIAL SEARCH — find nearby captains
-    const lng = pickup.lng;
-    const lat = pickup.lat;
-    const nearbyCaptains = await findNearbyCaptains(lng, lat, vehicle, 5);
-
-    console.log(`📍 Found ${nearbyCaptains.length} captains within 5km`);
-
+    const nearbyCaptains = await findNearbyCaptains(pickup.lng, pickup.lat, vehicle, 5);
     const ridePayload = {
       _id: ride._id,
-      pickup: { lat, lng, address: pickup.address || "" },
+      pickup: { lat: pickup.lat, lng: pickup.lng, address: pickup.address || "" },
       destination: { lat: destination.lat, lng: destination.lng, address: destination.address || "" },
-      vehicle: ride.vehicle,
-      fare: ride.fare,
-      status: ride.status,
-      distanceKm: "~2 km",
+      vehicle: ride.vehicle, fare: ride.fare, status: ride.status,
     };
 
     if (nearbyCaptains.length > 0) {
-      // Multicast only to nearby captains
-      nearbyCaptains.forEach((captain) => {
-        emitToCaptain(captain._id.toString(), "new_ride", ridePayload);
+      nearbyCaptains.forEach((c) => {
+        if (c._id.toString() !== userId) // never send to rider themselves
+          emitToCaptain(c._id.toString(), "new_ride", ridePayload);
       });
     } else {
-      // Fallback: broadcast to all online captains
       global.io.emit("new_ride", ridePayload);
     }
 
-    // Confirm to user — UI switches to SEARCHING
-    emitToUser(userId, "ride_status_update", {
-      status: "searching",
-      rideId: ride._id,
-      message: `Looking for captains nearby... (${nearbyCaptains.length} found)`,
-    });
+    emitToUser(userId, "ride_status_update", { status: "searching", rideId: ride._id });
 
-    console.log(`📡 Emitting to user_${userId}`);
-
-    // Return ride WITH otp to user's app
     res.json({
-      _id: ride._id,
-      otp: ride.otp,       // sent to user only
-      fare: ride.fare,
-      status: ride.status,
-      vehicle: ride.vehicle,
-      paymentMethod: ride.paymentMethod,
-      pickup: { lat, lng, address: pickup.address || "" },
+      _id: ride._id, otp: ride.otp, fare: ride.fare, status: ride.status,
+      vehicle: ride.vehicle, paymentMethod: ride.paymentMethod,
+      pickup: { lat: pickup.lat, lng: pickup.lng, address: pickup.address || "" },
       destination: { lat: destination.lat, lng: destination.lng, address: destination.address || "" },
     });
   } catch (err) {
@@ -103,95 +66,63 @@ exports.requestRide = async (req, res) => {
 exports.estimateFare = (req, res) => {
   try {
     const { pickup, destination, vehicle } = req.body;
-    const fare = calculateFare(pickup, destination, vehicle);
-    res.json({ fare, vehicle });
+    res.json({ fare: calculateFare(pickup, destination, vehicle), vehicle });
   } catch (err) {
     res.status(500).json({ msg: err.message });
   }
 };
 
 // ─────────────────────────────────────────────
-// PHASE 3: ACCEPTANCE — Atomic update, prevent double-accept
+// ACCEPT RIDE
 // ─────────────────────────────────────────────
 exports.acceptRide = async (req, res) => {
   try {
     const driverId = req.user.id;
-    console.log(`🏍️ acceptRide | driverId: ${driverId} | rideId: ${req.params.id}`);
 
-    // Atomic update — only succeeds if status is still "searching"
+    // Guard: driver cannot accept their own ride
+    const rideCheck = await Ride.findById(req.params.id).select("user");
+    if (!rideCheck) return res.status(404).json({ msg: "Ride not found" });
+    if (rideCheck.user.toString() === driverId)
+      return res.status(400).json({ msg: "You cannot accept your own ride" });
+
     const updated = await Ride.findOneAndUpdate(
       { _id: req.params.id, status: "searching" },
       { driver: driverId, status: "accepted" },
-      { returnDocument: "after" }
+      { new: true }
     );
+    if (!updated) return res.status(409).json({ msg: "Ride already accepted by another captain" });
 
-    if (!updated) {
-      return res.status(409).json({ msg: "Ride already accepted by another captain" });
-    }
-
-    // Fetch full ride with populated fields after update
     const ride = await Ride.findById(req.params.id)
       .populate("user", "name phone pushSubscription")
       .populate("driver", "name phone vehicleNo vehicle");
-
-    if (!ride || !ride.driver) {
-      return res.status(500).json({ msg: "Failed to load ride after accept" });
-    }
-
-    console.log(`✅ Ride ${ride._id} accepted by ${ride.driver.name} | OTP: ${ride.otp}`);
+    if (!ride?.driver) return res.status(500).json({ msg: "Failed to load ride after accept" });
 
     const userId = ride.user._id.toString();
     const captainId = ride.driver._id.toString();
+    console.log(`✅ Ride ${ride._id} accepted | driver: ${captainId} | user: ${userId} | sockets: ${JSON.stringify(Object.keys(getUserSockets()))}`);
 
-    const { getUserSockets } = require("../socket/socket");
-    console.log(`📡 acceptRide emitting ride_accepted to userId: ${userId} | userSockets:`, Object.keys(getUserSockets()));
-
-    // Join captain to ride room
     global.io.in(`user_${captainId}`).socketsJoin(`ride_${ride._id}`);
 
-    // Send ride_accepted to USER with OTP and driver details
     emitToUser(userId, "ride_accepted", {
-      _id: ride._id,
-      otp: ride.otp,
-      fare: ride.fare,
-      vehicle: ride.vehicle,
-      paymentMethod: ride.paymentMethod,
-      status: "accepted",
+      _id: ride._id, otp: ride.otp, fare: ride.fare,
+      vehicle: ride.vehicle, paymentMethod: ride.paymentMethod, status: "accepted",
       driver: {
-        _id: ride.driver._id,
-        name: ride.driver.name,
-        phone: ride.driver.phone,
+        _id: ride.driver._id, name: ride.driver.name, phone: ride.driver.phone,
         vehicleNo: ride.driver.vehicleNo || "MP 09 AB 1234",
-        vehicle: ride.driver.vehicle || ride.vehicle,
-        rating: 4.8,
+        vehicle: ride.driver.vehicle || ride.vehicle, rating: 4.8,
       },
     });
 
-    // Notify captain — pickup location, user details (NO OTP)
     emitToCaptain(captainId, "ride_assigned", {
       rideId: ride._id,
-      pickup: {
-        lat: ride.pickup.coordinates[1],
-        lng: ride.pickup.coordinates[0],
-        address: ride.pickup.address,
-      },
-      destination: {
-        lat: ride.destination.coordinates[1],
-        lng: ride.destination.coordinates[0],
-        address: ride.destination.address,
-      },
-      fare: ride.fare,
-      vehicle: ride.vehicle,
+      pickup: { lat: ride.pickup.coordinates[1], lng: ride.pickup.coordinates[0], address: ride.pickup.address },
+      destination: { lat: ride.destination.coordinates[1], lng: ride.destination.coordinates[0], address: ride.destination.address },
+      fare: ride.fare, vehicle: ride.vehicle,
       user: { name: ride.user.name, phone: ride.user.phone },
-      message: "Navigate to pickup point! Ask rider for OTP.",
     });
 
-    if (ride.user?.pushSubscription) {
-      await sendNotification(ride.user._id, {
-        title: "Captain Found! 🏍️",
-        body: `${ride.driver.name} is on the way. Your OTP: ${ride.otp}`,
-      });
-    }
+    if (ride.user?.pushSubscription)
+      await sendNotification(ride.user._id, { title: "Captain Found! 🏍️", body: `${ride.driver.name} is on the way. OTP: ${ride.otp}` });
 
     res.json(ride);
   } catch (err) {
@@ -201,28 +132,21 @@ exports.acceptRide = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
-// PHASE 5: ARRIVAL ALERT — Captain near pickup
+// CAPTAIN ARRIVED
 // ─────────────────────────────────────────────
 exports.captainArrived = async (req, res) => {
   try {
     await Ride.findByIdAndUpdate(req.params.id, { status: "arrived" });
     const ride = await Ride.findById(req.params.id).populate("user", "name pushSubscription");
-
     if (!ride) return res.status(404).json({ msg: "Ride not found" });
 
-    // Notify user — captain has arrived, share OTP now
     emitToUser(ride.user._id.toString(), "captain_arrived", {
-      rideId: ride._id,
+      rideId: ride._id, otp: ride.otp,
       message: "Your captain has arrived! Share your OTP to start the ride.",
-      otp: ride.otp,
     });
 
-    if (ride.user?.pushSubscription) {
-      await sendNotification(ride.user._id, {
-        title: "Captain Arrived! 📍",
-        body: "Your captain is at the pickup point. Share your OTP to start.",
-      });
-    }
+    if (ride.user?.pushSubscription)
+      await sendNotification(ride.user._id, { title: "Captain Arrived! 📍", body: "Share your OTP to start." });
 
     res.json({ msg: "Arrival notified", rideId: ride._id });
   } catch (err) {
@@ -231,13 +155,11 @@ exports.captainArrived = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
-// PHASE 5b: OTP VERIFY → START RIDE
+// VERIFY OTP → START RIDE
 // ─────────────────────────────────────────────
 exports.verifyOTP = async (req, res) => {
   try {
     const { otp } = req.body;
-
-    // Fetch ride with all fields
     const ride = await Ride.findById(req.params.id)
       .populate("user", "name phone pushSubscription")
       .populate("driver", "name");
@@ -249,48 +171,28 @@ exports.verifyOTP = async (req, res) => {
     if (ride.otp !== Number(otp))
       return res.status(400).json({ msg: "Invalid OTP ❌ Please try again" });
 
-    // Atomic status change — findOneAndUpdate ensures no race condition
     const updatedRide = await Ride.findOneAndUpdate(
       { _id: ride._id, status: { $in: ["searching", "accepted", "arrived"] } },
       { status: "ongoing", startTime: new Date(), otpVerified: true },
-      { returnDocument: "after" }
+      { new: true }
     );
-
     if (!updatedRide) return res.status(400).json({ msg: "Ride cannot be started — invalid status" });
-
-    console.log(`🚀 Ride ${ride._id} started at ${updatedRide.startTime}`);
 
     const userId = ride.user._id.toString();
     const captainId = ride.driver._id.toString();
+    console.log(`🚀 Ride started | userId: ${userId} | captainId: ${captainId} | sockets: ${JSON.stringify(Object.keys(getUserSockets()))}`);
 
-    const { getUserSockets } = require("../socket/socket");
-    console.log(`🔍 verifyOTP | userId: ${userId} | userSockets:`, Object.keys(getUserSockets()));
-
-    // Notify user — ride started
     emitToUser(userId, "ride_started", {
-      rideId: ride._id,
-      status: "ongoing",
-      startTime: updatedRide.startTime,
+      rideId: ride._id, status: "ongoing", startTime: updatedRide.startTime,
     });
 
-    // Notify captain — OTP verified, navigate to destination
     emitToCaptain(captainId, "ride_started_confirm", {
       rideId: ride._id,
-      message: "OTP verified! Ride started. Navigate to destination.",
-      destination: {
-        lat: ride.destination.coordinates[1],
-        lng: ride.destination.coordinates[0],
-        address: ride.destination.address,
-      },
+      destination: { lat: ride.destination.coordinates[1], lng: ride.destination.coordinates[0], address: ride.destination.address },
     });
 
-    // Web Push to user
-    if (ride.user?.pushSubscription) {
-      await sendNotification(ride.user._id, {
-        title: "Ride Started! 🚀",
-        body: `Your ride with ${ride.driver?.name} has begun. Have a safe trip!`,
-      });
-    }
+    if (ride.user?.pushSubscription)
+      await sendNotification(ride.user._id, { title: "Ride Started! 🚀", body: `Your ride with ${ride.driver?.name} has begun.` });
 
     res.json(updatedRide);
   } catch (err) {
@@ -323,23 +225,13 @@ exports.completeRide = async (req, res) => {
       await User.findByIdAndUpdate(ride.driver._id, { $inc: { wallet: ride.fare } });
       ride.paymentStatus = "paid";
     }
-
     await ride.save();
 
-    // Multicast to ride room
-    global.io.to(`ride_${ride._id}`).emit("ride_completed", {
-      rideId: ride._id,
-      fare: ride.fare,
-      paymentMethod: ride.paymentMethod,
-      status: "completed",
-    });
+    emitToUser(ride.user._id.toString(), "ride_completed", { rideId: ride._id, fare: ride.fare, paymentMethod: ride.paymentMethod, status: "completed" });
+    emitToCaptain(ride.driver._id.toString(), "ride_completed", { rideId: ride._id, fare: ride.fare, paymentMethod: ride.paymentMethod, status: "completed" });
 
-    if (ride.user?.pushSubscription) {
-      await sendNotification(ride.user._id, {
-        title: "Ride Complete! 🎉",
-        body: `Fare: ₹${ride.fare}. Rate your captain!`,
-      });
-    }
+    if (ride.user?.pushSubscription)
+      await sendNotification(ride.user._id, { title: "Ride Complete! 🎉", body: `Fare: ₹${ride.fare}. Rate your captain!` });
 
     res.json(ride);
   } catch (err) {
@@ -363,14 +255,9 @@ exports.cancelRide = async (req, res) => {
     ride.status = "cancelled";
     await ride.save();
 
-    emitToUser(ride.user._id.toString(), "ride_cancelled", {
-      rideId: ride._id, reason: req.body.reason || "Cancelled by user",
-    });
-    if (ride.driver) {
-      emitToCaptain(ride.driver._id.toString(), "ride_cancelled", {
-        rideId: ride._id, message: "Rider cancelled the trip",
-      });
-    }
+    emitToUser(ride.user._id.toString(), "ride_cancelled", { rideId: ride._id, reason: req.body.reason || "Cancelled" });
+    if (ride.driver)
+      emitToCaptain(ride.driver._id.toString(), "ride_cancelled", { rideId: ride._id });
 
     res.json({ msg: "Ride cancelled", ride });
   } catch (err) {
@@ -383,8 +270,7 @@ exports.rateRide = async (req, res) => {
     const { rating, by } = req.body;
     const update = by === "driver" ? { driverRating: rating } : { userRating: rating };
     await Ride.findByIdAndUpdate(req.params.id, update);
-    const ride = await Ride.findById(req.params.id);
-    res.json(ride);
+    res.json(await Ride.findById(req.params.id));
   } catch (err) {
     res.status(500).json({ msg: err.message });
   }
@@ -392,10 +278,7 @@ exports.rateRide = async (req, res) => {
 
 exports.getRideHistory = async (req, res) => {
   try {
-    // Support both role:driver and role:user (normalize rider->user already done)
-    const filter = req.user.role === "driver"
-      ? { driver: req.user.id }
-      : { user: req.user.id };
+    const filter = req.user.role === "driver" ? { driver: req.user.id } : { user: req.user.id };
     const rides = await Ride.find({ ...filter, status: "completed" })
       .populate("user", "name").populate("driver", "name")
       .sort({ createdAt: -1 }).limit(20);
@@ -407,8 +290,7 @@ exports.getRideHistory = async (req, res) => {
 
 exports.getAllRides = async (req, res) => {
   try {
-    const { status } = req.query;
-    const filter = status ? { status } : {};
+    const filter = req.query.status ? { status: req.query.status } : {};
     const rides = await Ride.find(filter)
       .populate("user", "name email").populate("driver", "name email")
       .sort({ createdAt: -1 }).limit(100);
