@@ -10,7 +10,10 @@ exports.getProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
   try {
     const { name, email, phone, profileImage } = req.body;
-    const update = { name, email, phone };
+    const update = { name };
+    // Only set email/phone if non-empty — prevents duplicate key on empty string
+    if (email && email.trim()) update.email = email.trim();
+    if (phone && phone.trim()) update.phone = phone.trim();
     if (profileImage) update.profileImage = profileImage;
     const user = await User.findByIdAndUpdate(
       req.user.id, update, { new: true }

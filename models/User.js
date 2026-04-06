@@ -2,8 +2,8 @@ const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
   name: String,
-  email: { type: String, unique: true, sparse: true },
-  phone: { type: String, unique: true, sparse: true },
+  email: { type: String, unique: true, sparse: true, set: (v) => v === "" ? undefined : v },
+  phone: { type: String, unique: true, sparse: true, set: (v) => v === "" ? undefined : v },
   password: String,
   role: { type: String, enum: ["user", "driver", "admin"], default: "user" },
   wallet: { type: Number, default: 0 },
