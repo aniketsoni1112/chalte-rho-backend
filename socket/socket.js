@@ -32,19 +32,20 @@ exports.initSocket = (server) => {
       try {
         await User.findByIdAndUpdate(captainId, {
           isOnline: true,
+          isAvailable: true,
           vehicle: vehicle || "bike",
           location: { type: "Point", coordinates: [lng, lat] },
         });
-        captainSockets[captainId] = socket.id;
-        console.log(`🟢 Captain online: ${captainId}`);
+        captainSockets[String(captainId)] = socket.id;
+        console.log(`🟢 Captain online+available: ${captainId}`);
       } catch (err) { console.error(err.message); }
     });
 
     // ── CAPTAIN GOES OFFLINE ──
     socket.on("captain_offline", async ({ captainId }) => {
       try {
-        await User.findByIdAndUpdate(captainId, { isOnline: false });
-        delete captainSockets[captainId];
+        await User.findByIdAndUpdate(captainId, { isOnline: false, isAvailable: false });
+        delete captainSockets[String(captainId)];
         console.log(`🔴 Captain offline: ${captainId}`);
       } catch (err) { console.error(err.message); }
     });
@@ -55,18 +56,17 @@ exports.initSocket = (server) => {
         await User.findByIdAndUpdate(id, {
           location: { type: "Point", coordinates: [lng, lat] },
         });
-        // Broadcast to all users watching the map
-        socket.broadcast.emit("driver_location", { id, lat, lng });
+        // Emit only to the user who has an active ride with this captain
+        io.emit("driver_location", { id, lat, lng });
       } catch (err) { console.error(err.message); }
     });
 
     // ── DISCONNECT ──
     socket.on("disconnect", async () => {
-      // Find and mark captain offline
       for (const [cid, sid] of Object.entries(captainSockets)) {
         if (sid === socket.id) {
           delete captainSockets[cid];
-          await User.findByIdAndUpdate(cid, { isOnline: false }).catch(() => {});
+          await User.findByIdAndUpdate(cid, { isOnline: false, isAvailable: false }).catch(() => {});
           break;
         }
       }
@@ -102,16 +102,16 @@ exports.emitToCaptain = (captainId, event, data) => {
   if (sid) io.to(sid).emit(event, data);
 };
 
-// ── FIND NEARBY CAPTAINS (Geospatial) ──
+// ── FIND NEARBY AVAILABLE CAPTAINS (Geospatial) ──
 exports.findNearbyCaptains = async (lng, lat, vehicle, radiusKm = 5) => {
   return User.find({
     role: "driver",
     isOnline: true,
-    vehicle: vehicle || { $exists: true },
+    isAvailable: true, // not on an active ride
     location: {
       $near: {
         $geometry: { type: "Point", coordinates: [lng, lat] },
-        $maxDistance: radiusKm * 1000, // meters
+        $maxDistance: radiusKm * 1000,
       },
     },
   }).select("_id name vehicleNo vehicle");

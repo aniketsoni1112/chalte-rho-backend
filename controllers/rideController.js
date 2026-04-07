@@ -101,6 +101,9 @@ exports.acceptRide = async (req, res) => {
     const captainId = ride.driver._id.toString();
     console.log(`✅ Ride ${ride._id} accepted | driver: ${captainId} | user: ${userId} | sockets: ${JSON.stringify(Object.keys(getUserSockets()))}`);
 
+    // Phase 3: set captain isAvailable false — prevents overlapping ride requests
+    await User.findByIdAndUpdate(driverId, { isAvailable: false });
+
     global.io.in(`user_${captainId}`).socketsJoin(`ride_${ride._id}`);
 
     emitToUser(userId, "ride_accepted", {
@@ -227,6 +230,9 @@ exports.completeRide = async (req, res) => {
     }
     await ride.save();
 
+    // Phase 5: reset captain to isAvailable true — immediately visible in next geospatial query
+    await User.findByIdAndUpdate(ride.driver._id, { isAvailable: true });
+
     emitToUser(ride.user._id.toString(), "ride_completed", { rideId: ride._id, fare: ride.fare, paymentMethod: ride.paymentMethod, status: "completed" });
     emitToCaptain(ride.driver._id.toString(), "ride_completed", { rideId: ride._id, fare: ride.fare, paymentMethod: ride.paymentMethod, status: "completed" });
 
@@ -254,6 +260,10 @@ exports.cancelRide = async (req, res) => {
 
     ride.status = "cancelled";
     await ride.save();
+
+    // Reset captain availability on cancel
+    if (ride.driver)
+      await User.findByIdAndUpdate(ride.driver._id, { isAvailable: true });
 
     emitToUser(ride.user._id.toString(), "ride_cancelled", { rideId: ride._id, reason: req.body.reason || "Cancelled" });
     if (ride.driver)

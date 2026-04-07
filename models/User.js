@@ -19,6 +19,7 @@ const userSchema = new mongoose.Schema({
     coordinates: { type: [Number], default: [0, 0] }, // [lng, lat]
   },
   isOnline: { type: Boolean, default: false },
+  isAvailable: { type: Boolean, default: false }, // true = online & not on a ride
   vehicle: { type: String, enum: ["bike", "auto", "cab"], default: "bike" },
   vehicleNo: { type: String, default: "" },
   profileImage: { type: String, default: "" }, // base64 or URL
