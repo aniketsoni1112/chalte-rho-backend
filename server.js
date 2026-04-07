@@ -17,7 +17,7 @@ const app = express();
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    allowedHeaders: ["Content-Type", "Authorization", "bypass-tunnel-reminder"]
 }));
 app.use(express.json());
 
@@ -34,7 +34,7 @@ app.use("/api/chat", chatRoutes);
 app.get("/test", (req, res) => res.send("API Working ✅"));
 
 initSocket(server);
-const PORT = process.env.PORT || 5007;
+const PORT = process.env.PORT || 5008;
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
 });
