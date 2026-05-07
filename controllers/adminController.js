@@ -4,16 +4,24 @@ const Ride = require("../models/Ride");
 // ── STATS ──
 exports.getStats = async (req, res) => {
   try {
-    const [totalUsers, totalDrivers, totalRides, completedRides, activeRides, revenue] = await Promise.all([
+    const [totalUsers, totalDrivers, totalRides, completedRides, activeRides, revenue,
+      pendingCaptains, approvedCaptains, managers] = await Promise.all([
       User.countDocuments({ role: "user" }),
       User.countDocuments({ role: "driver" }),
       Ride.countDocuments(),
       Ride.countDocuments({ status: "completed" }),
       Ride.countDocuments({ status: { $in: ["accepted", "ongoing"] } }),
       Ride.aggregate([{ $match: { status: "completed" } }, { $group: { _id: null, total: { $sum: "$fare" } } }]),
+      User.countDocuments({ role: "driver", captainStatus: "pending" }),
+      User.countDocuments({ role: "driver", captainStatus: "approved" }),
+      User.countDocuments({ role: "manager" }),
     ]);
-    const onlineDrivers = Math.floor(totalDrivers * 0.3); // placeholder
-    res.json({ totalUsers, totalDrivers, totalRides, completedRides, activeRides, onlineDrivers, revenue: revenue[0]?.total || 0 });
+    const onlineDrivers = await User.countDocuments({ role: "driver", isOnline: true });
+    res.json({
+      totalUsers, totalDrivers, totalRides, completedRides, activeRides,
+      onlineDrivers, revenue: revenue[0]?.total || 0,
+      pendingCaptains, approvedCaptains, managers,
+    });
   } catch (err) { res.status(500).json({ msg: err.message }); }
 };
 

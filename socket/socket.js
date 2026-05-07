@@ -3,8 +3,7 @@ const User = require("../models/User");
 
 let io;
 
-// In-memory maps
-const userSockets = {};    // { userId: socketId }
+const userSockets    = {}; // { userId: socketId }
 const captainSockets = {}; // { captainId: socketId }
 
 exports.initSocket = (server) => {
@@ -16,49 +15,52 @@ exports.initSocket = (server) => {
 
     // ── REGISTER ──
     socket.on("register", ({ userId, role }) => {
+      if (!userId) return;
       const uid = String(userId);
-      // Leave any previous room this socket was in
-      socket.rooms.forEach((room) => {
-        if (room !== socket.id) socket.leave(room);
-      });
       socket.join(`user_${uid}`);
       userSockets[uid] = socket.id;
-      if (role === "driver") captainSockets[uid] = socket.id;
-      console.log(`✅ Registered [${role}]: ${uid} → socket ${socket.id}`);
+      if (role === "driver") {
+        captainSockets[uid] = socket.id;
+        console.log(`✅ Driver registered: ${uid} → ${socket.id}`);
+      } else {
+        console.log(`✅ User registered: ${uid} → ${socket.id}`);
+      }
     });
 
     // ── CAPTAIN GOES ONLINE ──
     socket.on("captain_online", async ({ captainId, lat, lng, vehicle }) => {
       try {
-        await User.findByIdAndUpdate(captainId, {
+        const cid = String(captainId);
+        await User.findByIdAndUpdate(cid, {
           isOnline: true,
           isAvailable: true,
           vehicle: vehicle || "bike",
-          location: { type: "Point", coordinates: [lng, lat] },
+          location: { type: "Point", coordinates: [parseFloat(lng) || 0, parseFloat(lat) || 0] },
         });
-        captainSockets[String(captainId)] = socket.id;
-        console.log(`🟢 Captain online+available: ${captainId}`);
-      } catch (err) { console.error(err.message); }
+        captainSockets[cid] = socket.id;
+        socket.join(`user_${cid}`);
+        console.log(`🟢 Captain online: ${cid} | socket: ${socket.id}`);
+      } catch (err) { console.error("captain_online error:", err.message); }
     });
 
     // ── CAPTAIN GOES OFFLINE ──
     socket.on("captain_offline", async ({ captainId }) => {
       try {
-        await User.findByIdAndUpdate(captainId, { isOnline: false, isAvailable: false });
-        delete captainSockets[String(captainId)];
-        console.log(`🔴 Captain offline: ${captainId}`);
-      } catch (err) { console.error(err.message); }
+        const cid = String(captainId);
+        await User.findByIdAndUpdate(cid, { isOnline: false, isAvailable: false });
+        delete captainSockets[cid];
+        console.log(`🔴 Captain offline: ${cid}`);
+      } catch (err) { console.error("captain_offline error:", err.message); }
     });
 
     // ── CAPTAIN GPS PING ──
     socket.on("location_update", async ({ id, lat, lng }) => {
       try {
         await User.findByIdAndUpdate(id, {
-          location: { type: "Point", coordinates: [lng, lat] },
+          location: { type: "Point", coordinates: [parseFloat(lng), parseFloat(lat)] },
         });
-        // Emit only to the user who has an active ride with this captain
         io.emit("driver_location", { id, lat, lng });
-      } catch (err) { console.error(err.message); }
+      } catch (err) { console.error("location_update error:", err.message); }
     });
 
     // ── DISCONNECT ──
@@ -67,6 +69,7 @@ exports.initSocket = (server) => {
         if (sid === socket.id) {
           delete captainSockets[cid];
           await User.findByIdAndUpdate(cid, { isOnline: false, isAvailable: false }).catch(() => {});
+          console.log(`🔴 Captain disconnected: ${cid}`);
           break;
         }
       }
@@ -78,45 +81,82 @@ exports.initSocket = (server) => {
   });
 };
 
-// ── EMIT TO SPECIFIC USER ROOM + direct socketId fallback ──
+// ── EMIT TO USER ──
 exports.emitToUser = (userId, event, data) => {
   if (!io) return;
   const uid = String(userId);
-  const room = `user_${uid}`;
-  console.log(`📡 emitToUser → ${room} | event: ${event}`);
-  io.to(room).emit(event, data);
-  // Direct fallback via tracked socketId
+  console.log(`📡 emitToUser [${event}] → ${uid} | socket:${userSockets[uid] || "NONE"}`);
+  io.to(`user_${uid}`).emit(event, data);
   const sid = userSockets[uid];
   if (sid) io.to(sid).emit(event, data);
 };
 
-// ── EMIT TO SPECIFIC CAPTAIN ROOM + direct socketId fallback ──
+// ── EMIT TO CAPTAIN ──
 exports.emitToCaptain = (captainId, event, data) => {
   if (!io) return;
   const cid = String(captainId);
-  const room = `user_${cid}`;
-  console.log(`📡 emitToCaptain → ${room} | event: ${event}`);
-  io.to(room).emit(event, data);
-  // Direct fallback via tracked socketId
+  console.log(`📡 emitToCaptain [${event}] → ${cid} | socket:${captainSockets[cid] || "NONE"}`);
+  io.to(`user_${cid}`).emit(event, data);
   const sid = captainSockets[cid];
   if (sid) io.to(sid).emit(event, data);
 };
 
-// ── FIND NEARBY AVAILABLE CAPTAINS (Geospatial) ──
-exports.findNearbyCaptains = async (lng, lat, vehicle, radiusKm = 5) => {
-  return User.find({
-    role: "driver",
-    isOnline: true,
-    isAvailable: true, // not on an active ride
-    location: {
-      $near: {
-        $geometry: { type: "Point", coordinates: [lng, lat] },
-        $maxDistance: radiusKm * 1000,
-      },
-    },
-  }).select("_id name vehicleNo vehicle");
+// ── SEND new_ride TO ALL ONLINE DRIVERS ──
+// Priority: tracked sockets → room broadcast → global fallback
+exports.sendRideToDrivers = (ridePayload, excludeUserId) => {
+  if (!io) return;
+  const exclude = String(excludeUserId);
+  const tracked = Object.entries(captainSockets).filter(([cid]) => cid !== exclude);
+
+  console.log(`📡 sendRideToDrivers | tracked: ${tracked.length} | excludeUser: ${exclude}`);
+
+  if (tracked.length > 0) {
+    // Send to every tracked captain via both socketId and room
+    tracked.forEach(([cid, sid]) => {
+      io.to(sid).emit("new_ride", ridePayload);
+      io.to(`user_${cid}`).emit("new_ride", ridePayload);
+    });
+  }
+
+  // ALWAYS also broadcast globally so captains connected but not in map receive it
+  // (handles server restart scenario where captainSockets map is empty)
+  io.emit("new_ride", ridePayload);
 };
 
-exports.getUserSockets = () => userSockets;
+// ── FIND NEARBY CAPTAINS ──
+exports.findNearbyCaptains = async (lng, lat, vehicle, radiusKm = 10) => {
+  try {
+    // Try geo-nearby first
+    const nearby = await User.find({
+      role: "driver",
+      isAvailable: { $ne: false },
+      captainStatus: "approved",
+      location: {
+        $near: {
+          $geometry: { type: "Point", coordinates: [lng, lat] },
+          $maxDistance: radiusKm * 1000,
+        },
+      },
+    }).select("_id name vehicleNo vehicle");
+
+    if (nearby.length > 0) return nearby;
+
+    // Fallback: all approved+available drivers
+    console.log("⚠️  No nearby captains via geo — returning all available drivers");
+    return await User.find({
+      role: "driver",
+      isAvailable: { $ne: false },
+      captainStatus: "approved",
+    }).select("_id name vehicleNo vehicle");
+
+  } catch (err) {
+    console.error("findNearbyCaptains error:", err.message);
+    // If geo index fails, return all drivers
+    return await User.find({ role: "driver", captainStatus: "approved" })
+      .select("_id name vehicleNo vehicle");
+  }
+};
+
+exports.getUserSockets    = () => userSockets;
 exports.getCaptainSockets = () => captainSockets;
 exports.getIo = () => io;

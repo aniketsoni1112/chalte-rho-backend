@@ -5,7 +5,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, unique: true, sparse: true, set: (v) => v === "" ? undefined : v },
   phone: { type: String, unique: true, sparse: true, set: (v) => v === "" ? undefined : v },
   password: String,
-  role: { type: String, enum: ["user", "driver", "admin"], default: "user" },
+  role: { type: String, enum: ["user", "driver", "admin", "manager"], default: "user" },
   wallet: { type: Number, default: 0 },
   pushSubscription: { type: Object, default: null },
   upiIds: [String],
@@ -22,6 +22,15 @@ const userSchema = new mongoose.Schema({
   isAvailable: { type: Boolean, default: false }, // true = online & not on a ride
   vehicle: { type: String, enum: ["bike", "auto", "cab"], default: "bike" },
   vehicleNo: { type: String, default: "" },
+  vehicleNumber: { type: String, sparse: true },   // unique vehicle reg number
+  rcCardNumber:  { type: String, sparse: true },   // RC card
+  licenseNumber: { type: String, sparse: true },   // driving license
+
+  // Captain approval
+  captainStatus: { type: String, enum: ["pending", "approved", "rejected"], default: "pending" },
+  approvedBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  approvedAt:    { type: Date, default: null },
+  approvalNote:  { type: String, default: "" },
   profileImage: { type: String, default: "" }, // base64 or URL
 }, { timestamps: true });
 
