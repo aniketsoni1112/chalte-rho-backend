@@ -15,10 +15,13 @@ const { initSocket } = require("./socket/socket");
 
 const app = express();
 
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://chalte-rho-frontend.vercel.app";
+
 app.use(cors({
-    origin: "*",
+    origin: [FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
 }));
 
 app.use(express.json());

@@ -7,7 +7,22 @@ const userSockets    = {}; // { userId: socketId }
 const captainSockets = {}; // { captainId: socketId }
 
 exports.initSocket = (server) => {
-  io = socketIo(server, { cors: { origin: "*" } });
+  const FRONTEND_URL = process.env.FRONTEND_URL || "https://chalte-rho-frontend.vercel.app";
+
+  io = socketIo(server, {
+    cors: {
+      origin: [FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"],
+      methods: ["GET", "POST"],
+      credentials: true,
+    },
+    // Allow both transports — Render proxies WebSocket but polling is the fallback
+    transports: ["polling", "websocket"],
+    // Ping settings to prevent Render from closing idle connections
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    upgradeTimeout: 30000,
+    allowUpgrades: true,
+  });
   global.io = io;
 
   io.on("connection", (socket) => {
